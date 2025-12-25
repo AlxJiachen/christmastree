@@ -2,6 +2,8 @@
 # Christmas Tree Space 🎄
 
 这是一个的3d交互式圣诞树网页项目。
+基于zebo101的原开源项目更改，优化了手机双指捏和，还有鼠标左右键同时按的显示逻辑，让focus模式不仅出现在手势控制。
+优化显示了背景星星闪烁效果以及个人显示偏好。
 
 **在线预览**: [圣诞树](https://christmas-tree.wellcome.icu/)
 <img width="1552" height="1121" alt="image" src="https://github.com/user-attachments/assets/c96f5f14-d837-43d1-a26a-3c06edfe198d" />
