@@ -32,7 +32,7 @@ export function LoadingScreen({ onLoaded, progress }: LoadingScreenProps) {
       
       {/* Loading Text */}
       <h2 className="text-2xl font-bold text-white mb-4">
-        魔法圣诞树加载中{dots}
+        正在为小齐宝宝点亮星空✨{dots}
       </h2>
       
       {/* Progress Bar */}

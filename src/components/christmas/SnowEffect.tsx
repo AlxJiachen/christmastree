@@ -7,7 +7,7 @@ interface SnowEffectProps {
   count?: number;
 }
 
-export function SnowEffect({ active, count = 800 }: SnowEffectProps) {
+export function SnowEffect({ active, count = 2800 }: SnowEffectProps) {
   const pointsRef = useRef<THREE.Points>(null);
   const velocitiesRef = useRef<Float32Array>();
   const activeRef = useRef(false);

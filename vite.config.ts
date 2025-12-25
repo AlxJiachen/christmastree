@@ -5,9 +5,11 @@ import { componentTagger } from "lovable-tagger";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  //base: "/christmas-treeFlora/",
   server: {
     host: "::",
     port: 8080,
+    allowedHosts: true,
   },
   build: {
     outDir: "dist",

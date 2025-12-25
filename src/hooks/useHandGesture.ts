@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { GestureType, HandGestureState } from '@/types/christmas';
+// ✨ 改动1：必须引入 HandLandmarker，而不是 GestureRecognizer
+import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 
 interface UseHandGestureOptions {
   enabled: boolean;
@@ -16,12 +18,15 @@ export function useHandGesture({ enabled, onGestureChange }: UseHandGestureOptio
   const [status, setStatus] = useState<string>('idle');
   
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const handsRef = useRef<any>(null);
+  // ✨ 改动2：类型必须是 HandLandmarker
+  const handLandmarkerRef = useRef<HandLandmarker | null>(null);
   const lastGestureRef = useRef<GestureType>('none');
-  // Store callback in ref to avoid re-initialization
+  const animationFrameIdRef = useRef<number | null>(null);
+
   const onGestureChangeRef = useRef(onGestureChange);
   onGestureChangeRef.current = onGestureChange;
 
+  // ✨ 几何计算：完全靠算手指距离，不需要大模型
   const calculateFingerDistance = useCallback((landmarks: any[], finger1: number, finger2: number) => {
     const p1 = landmarks[finger1];
     const p2 = landmarks[finger2];
@@ -32,323 +37,164 @@ export function useHandGesture({ enabled, onGestureChange }: UseHandGestureOptio
     );
   }, []);
 
+  // ✨ 手势判断逻辑
   const detectGesture = useCallback((landmarks: any[]): GestureType => {
     if (!landmarks || landmarks.length < 21) return 'none';
 
-    const thumbTip = landmarks[4];
-    const indexTip = landmarks[8];
-    const middleTip = landmarks[12];
-    const ringTip = landmarks[16];
-    const pinkyTip = landmarks[20];
-    
-    const indexMcp = landmarks[5];
-    const middleMcp = landmarks[9];
-    const ringMcp = landmarks[13];
-    const pinkyMcp = landmarks[17];
-
-    // Check pinch (thumb to index distance)
+    // 1. Pinch (捏合): 拇指(4)与食指(8)距离 < 0.06
     const pinchDist = calculateFingerDistance(landmarks, 4, 8);
     if (pinchDist < 0.06) {
       return 'pinch';
     }
 
-    // Check if fingers are extended
-    const indexExtended = indexTip.y < indexMcp.y;
-    const middleExtended = middleTip.y < middleMcp.y;
-    const ringExtended = ringTip.y < ringMcp.y;
-    const pinkyExtended = pinkyTip.y < pinkyMcp.y;
+    // 2. 判断手指伸缩 (用于区分 Open 和 Fist)
+    // y 越小越靠上。指尖 < 关节 = 伸直
+    const indexExtended = landmarks[8].y < landmarks[5].y;
+    const middleExtended = landmarks[12].y < landmarks[9].y;
+    const ringExtended = landmarks[16].y < landmarks[13].y;
+    const pinkyExtended = landmarks[20].y < landmarks[17].y;
 
     const extendedCount = [indexExtended, middleExtended, ringExtended, pinkyExtended].filter(Boolean).length;
 
-    if (extendedCount >= 3) return 'open';
-    if (extendedCount <= 1) return 'fist';
-    if (indexExtended && !middleExtended && !ringExtended && !pinkyExtended) return 'pointing';
+    if (extendedCount >= 3) return 'open'; // 张开
+    if (extendedCount <= 1) return 'fist'; // 握拳
 
     return 'none';
   }, [calculateFingerDistance]);
 
-  // Stable onResults callback - doesn't depend on external callbacks
-  const onResults = useCallback((results: any) => {
-    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-      const landmarks = results.multiHandLandmarks[0];
-      const gesture = detectGesture(landmarks);
-      
-      const palmCenter = landmarks[9];
-      const handPosition = {
-        x: 1 - palmCenter.x,
-        y: palmCenter.y,
-      };
-
-      const pinchDistance = calculateFingerDistance(landmarks, 4, 8);
-
-      if (gesture !== lastGestureRef.current) {
-        console.log('[Gesture] Detected gesture:', gesture);
-        lastGestureRef.current = gesture;
-        // Use ref to call callback - avoids dependency issues
-        onGestureChangeRef.current?.(gesture);
-      }
-
-      setState({
-        gesture,
-        handPosition,
-        pinchDistance,
-        isTracking: true,
-      });
-    } else {
-      setState(prev => {
-        if (prev.isTracking) {
-          console.log('[Gesture] Hand lost');
-        }
-        return {
-          ...prev,
-          isTracking: false,
-          handPosition: null,
-        };
-      });
-    }
-  }, [detectGesture, calculateFingerDistance]);
-
   useEffect(() => {
     if (!enabled) return;
 
-    let mounted = true;
-    let animationFrameId: number | null = null;
     let stream: MediaStream | null = null;
+    let mounted = true;
 
-    const initMediaPipe = async () => {
+    const initHandLandmarker = async () => {
       try {
-        setStatus('loading-mediapipe');
-        console.log('[Gesture] Starting MediaPipe initialization...');
-        
-        // Load MediaPipe Hands from CDN via script tag to avoid bundling issues
-        // Use multiple CDN sources with fallback for China users
-        const loadScript = (src: string, timeout = 10000): Promise<void> => {
-          return new Promise((resolve, reject) => {
-            if (document.querySelector(`script[src="${src}"]`)) {
-              resolve();
-              return;
-            }
-            const script = document.createElement('script');
-            script.src = src;
-            script.crossOrigin = 'anonymous';
-            
-            const timeoutId = setTimeout(() => {
-              reject(new Error('Script load timeout'));
-            }, timeout);
-            
-            script.onload = () => {
-              clearTimeout(timeoutId);
-              resolve();
-            };
-            script.onerror = () => {
-              clearTimeout(timeoutId);
-              reject(new Error('Script load failed'));
-            };
-            document.head.appendChild(script);
-          });
-        };
+        setStatus('loading-model');
+        console.log('[Gesture] Initializing HandLandmarker (Lite Mode)...');
 
-        // CDN sources with China-friendly options first
-        // fastly.jsdelivr.net is often more accessible in China
-        const cdnSources = [
-          'https://fastly.jsdelivr.net/npm/@mediapipe/hands/hands.js',
-          'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js',
-          'https://unpkg.com/@mediapipe/hands/hands.js',
-        ];
-        
-        let loaded = false;
-        let successfulCdn = 'cdn.jsdelivr.net';
-        for (const src of cdnSources) {
-          if (!mounted) return;
-          try {
-            console.log('[Gesture] Trying CDN:', src);
-            await loadScript(src, 12000);
-            loaded = true;
-            // Extract CDN host for model files
-            const match = src.match(/https:\/\/([^/]+)/);
-            if (match) successfulCdn = match[1];
-            console.log('[Gesture] Successfully loaded from:', src);
-            break;
-          } catch (e) {
-            console.warn('[Gesture] Failed to load from:', src, e);
-          }
-        }
+        const vision = await FilesetResolver.forVisionTasks('/wasm');
 
-        if (!loaded) {
-          throw new Error('无法加载手势识别库，请检查网络连接或使用VPN');
-        }
-        
-        // Store successful CDN for model files
-        (window as any).__mediapipeCdn = successfulCdn;
+        // ✨ 改动3：创建 HandLandmarker 实例
+        handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: '/models/hand_landmarker.task', 
+            delegate: 'GPU', // 如果手机端还报错，这里改成 'CPU'
+          },
+          runningMode: 'VIDEO',
+          numHands: 1,
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
 
-        if (!mounted) return;
-
-        // Access the global Hands class
-        const Hands = (window as any).Hands;
-        if (!Hands) {
-          throw new Error('MediaPipe Hands not loaded');
-        }
-
-        // Request camera access
         setStatus('requesting-camera');
-        console.log('[Gesture] Requesting camera...');
-        console.log('[Gesture] User Agent:', navigator.userAgent);
-        
-        // Check if getUserMedia is supported
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          throw new Error('getUserMedia not supported on this device/browser');
-        }
 
-        // Use more relaxed constraints for Android compatibility
-        const isAndroid = /Android/i.test(navigator.userAgent);
-        const isChrome = /Chrome/i.test(navigator.userAgent);
-        console.log('[Gesture] Is Android:', isAndroid, 'Is Chrome:', isChrome);
-        
-        // Android needs simpler constraints and lower resolution
+        // ... 摄像头逻辑 (保持不变) ...
         const constraints = {
-          video: isAndroid 
-            ? { 
-                facingMode: 'user',
-                width: { ideal: 320 },
-                height: { ideal: 240 }
-              }
-            : { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
-        };
+            video: {
+              width: { ideal: 640 },
+              height: { ideal: 480 },
+              facingMode: 'user',
+            },
+          };
+  
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
         
-        console.log('[Gesture] Camera constraints:', JSON.stringify(constraints));
-        
-        try {
-          stream = await navigator.mediaDevices.getUserMedia(constraints);
-          console.log('[Gesture] Camera stream obtained, tracks:', stream.getVideoTracks().length);
-          stream.getVideoTracks().forEach(track => {
-            console.log('[Gesture] Video track settings:', JSON.stringify(track.getSettings()));
-          });
-        } catch (camError) {
-          console.error('[Gesture] Camera error:', camError);
-          throw new Error('Camera access failed: ' + (camError as Error).message);
-        }
-
-        if (!mounted) {
-          stream.getTracks().forEach(t => t.stop());
-          return;
-        }
-
-        // Create video element with Android-compatible attributes
         const video = document.createElement('video');
         video.style.display = 'none';
-        video.setAttribute('playsinline', 'true');
-        video.setAttribute('webkit-playsinline', 'true'); // iOS/Android WebKit
-        video.setAttribute('autoplay', 'true');
-        video.setAttribute('muted', 'true');
-        video.muted = true;
+        video.autoplay = true;
         video.playsInline = true;
+        video.muted = true;
         video.srcObject = stream;
-        document.body.appendChild(video);
+        
+        await new Promise((resolve) => {
+          video.onloadedmetadata = () => {
+            video.play().then(resolve);
+          };
+        });
+
         videoRef.current = video;
+        document.body.appendChild(video);
+        setStatus('active');
 
-        console.log('[Gesture] Video element created, attempting to play...');
-        
-        try {
-          await video.play();
-        } catch (playError) {
-          console.error('[Gesture] Video play error:', playError);
-          throw new Error('Video playback failed: ' + (playError as Error).message);
-        }
-        
-        // Wait for video to have actual dimensions - longer wait for Android
-        let retries = 0;
-        const maxRetries = isAndroid ? 50 : 30;
-        while ((video.videoWidth === 0 || video.videoHeight === 0) && retries < maxRetries) {
-          await new Promise(r => setTimeout(r, 100));
-          retries++;
-        }
-        
-        setStatus('initializing-hands');
-        console.log('[Gesture] Video playing, dimensions:', video.videoWidth, 'x', video.videoHeight, 'readyState:', video.readyState);
+        // ... 侦测循环 ...
+        const detectFrame = () => {
+          if (!mounted || !videoRef.current || !handLandmarkerRef.current) return;
 
-        if (video.videoWidth === 0 || video.videoHeight === 0) {
-          console.error('[Gesture] Video dimensions still 0 after waiting');
-          throw new Error('Video stream has no dimensions');
-        }
+          if (videoRef.current.readyState >= 2) {
+            // ✨ 改动4：API 变成了 detectForVideo
+            const results = handLandmarkerRef.current.detectForVideo(
+              videoRef.current,
+              Date.now()
+            );
 
-        // Use the same CDN that successfully loaded the script
-        const cdnHost = (window as any).__mediapipeCdn || 'cdn.jsdelivr.net';
-        const modelCdnBase = `https://${cdnHost}/npm/@mediapipe/hands`;
-        console.log('[Gesture] Using CDN for model files:', modelCdnBase);
-        
-        const hands = new Hands({
-          locateFile: (file: string) => {
-            console.log('[Gesture] Loading model file:', file);
-            return `${modelCdnBase}/${file}`;
-          },
-        });
-
-        // Use lower complexity on Android for better performance
-        hands.setOptions({
-          maxNumHands: 1,
-          modelComplexity: isAndroid ? 0 : 1, // Use lite model on Android
-          minDetectionConfidence: isAndroid ? 0.6 : 0.5,
-          minTrackingConfidence: isAndroid ? 0.4 : 0.3,
-        });
-
-        hands.onResults(onResults);
-        handsRef.current = hands;
-
-        setStatus('processing-frames');
-        console.log('[Gesture] MediaPipe Hands initialized');
-
-        // Use requestAnimationFrame with throttling - 30fps for smooth response
-        let lastTime = 0;
-        const processFrame = async (currentTime: number) => {
-          if (!mounted || !handsRef.current || !videoRef.current) return;
-          
-          // Process at ~30fps (every 33ms)
-          if (currentTime - lastTime > 33) {
-            lastTime = currentTime;
-            try {
-              if (videoRef.current.readyState >= 2) {
-                await handsRef.current.send({ image: videoRef.current });
-              }
-            } catch (e) {
-              // Silently handle frame errors
-            }
+            processResults(results);
           }
           
-          animationFrameId = requestAnimationFrame(processFrame);
+          animationFrameIdRef.current = requestAnimationFrame(detectFrame);
         };
 
-        console.log('[Gesture] Starting frame processing...');
-        animationFrameId = requestAnimationFrame(processFrame);
+        detectFrame();
 
       } catch (error) {
-        console.error('[Gesture] MediaPipe initialization failed:', error);
-        setStatus('error: ' + (error as Error).message);
+        console.error('[Gesture] Initialization failed:', error);
+        setStatus('error');
         setState(prev => ({ ...prev, isTracking: false }));
       }
     };
 
-    initMediaPipe();
+    const processResults = (results: any) => {
+      if (results.landmarks && results.landmarks.length > 0) {
+        const landmarks = results.landmarks[0];
+        
+        // ✨ 改动5：使用上面写的几何算法判断手势
+        const detectedGesture = detectGesture(landmarks);
+
+        if (detectedGesture !== lastGestureRef.current) {
+          console.log('[Gesture] New:', detectedGesture);
+          lastGestureRef.current = detectedGesture;
+          onGestureChangeRef.current?.(detectedGesture);
+        }
+
+        const palmBase = landmarks[0];
+        const middleFingerMcp = landmarks[9];
+        const centerX = (palmBase.x + middleFingerMcp.x) / 2;
+        const centerY = (palmBase.y + middleFingerMcp.y) / 2;
+        const pinchDist = calculateFingerDistance(landmarks, 4, 8);
+
+        setState({
+          isTracking: true,
+          gesture: detectedGesture,
+          handPosition: { x: 1 - centerX, y: centerY }, 
+          pinchDistance: pinchDist
+        });
+
+      } else {
+        if (state.isTracking) {
+           setState(prev => ({ ...prev, isTracking: false, gesture: 'none' }));
+        }
+      }
+    };
+
+    initHandLandmarker();
 
     return () => {
       mounted = false;
-      console.log('[Gesture] Cleaning up...');
-      
-      if (animationFrameId) {
-        cancelAnimationFrame(animationFrameId);
+      if (animationFrameIdRef.current) cancelAnimationFrame(animationFrameIdRef.current);
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.srcObject = null;
+        videoRef.current.remove();
       }
-      
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
       }
-      
-      if (videoRef.current) {
-        videoRef.current.remove();
-        videoRef.current = null;
+      if (handLandmarkerRef.current) {
+        handLandmarkerRef.current.close();
       }
-      
-      handsRef.current = null;
     };
-  }, [enabled, onResults]);
+  }, [enabled, calculateFingerDistance, detectGesture]);
 
   return { ...state, status };
 }

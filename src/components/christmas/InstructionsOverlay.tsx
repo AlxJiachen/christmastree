@@ -12,9 +12,7 @@ export function InstructionsOverlay({ onDismiss }: InstructionsOverlayProps) {
   useEffect(() => {
     // Check if user has seen instructions before
     const hasSeenInstructions = localStorage.getItem('christmas-tree-instructions-seen');
-    if (!hasSeenInstructions) {
-      setShow(true);
-    }
+setShow(true);
   }, []);
 
   const handleDismiss = () => {
@@ -38,9 +36,11 @@ export function InstructionsOverlay({ onDismiss }: InstructionsOverlayProps) {
         </Button>
 
         <h2 className="text-2xl font-display font-bold text-christmas-gold mb-6 text-center">
-          🎄 欢迎来到魔法圣诞树
+          ✨ 欢迎来到 小齐宝宝 的专属星系 🎄
         </h2>
-
+      <p className="text-center text-sm text-white/80 mb-4">
+  这是为你准备的一整个宇宙✨，握拳试试看？
+      </p>
         <div className="space-y-4">
           <div className="flex items-start gap-4">
             <div className="p-2 rounded-lg bg-christmas-green/20">

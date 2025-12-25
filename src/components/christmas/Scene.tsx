@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, Stars } from '@react-three/drei';
+import { OrbitControls, Stars, Sparkles } from '@react-three/drei';
 import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import { ParticleSystem, GiftBoxes, GemOrnaments, TetrahedronSpiral } from './ParticleSystem';
@@ -9,12 +9,14 @@ import { TreeStar } from './TreeStar';
 import { SnowEffect } from './SnowEffect';
 import { TreeState } from '@/types/christmas';
 
+// ✨ 新增：接口增加 zoom 属性
 interface SceneContentProps {
   state: TreeState;
   photos: string[];
   focusedPhotoIndex: number | null;
   orbitRotation: { x: number; y: number };
   handPosition: { x: number; y: number } | null;
+  zoom: number; // <--- 新增
   onStarFocusChange?: (focused: boolean) => void;
 }
 
@@ -22,11 +24,13 @@ function CameraController({
   state, 
   orbitRotation,
   handPosition,
+  zoom, // <--- 接收 zoom
   onStarFocused,
 }: { 
   state: TreeState;
   orbitRotation: { x: number; y: number };
   handPosition: { x: number; y: number } | null;
+  zoom: number; // <--- 接收 zoom
   onStarFocused?: (focused: boolean) => void;
 }) {
   const { camera } = useThree();
@@ -40,16 +44,17 @@ function CameraController({
   
   // Physics-based smooth rotation
   const velocityRef = useRef(0);
-  const targetVelocityRef = useRef(0.15); // Target rotation speed
+  const targetVelocityRef = useRef(0.15); 
 
-  // Find nearest ribbon position based on camera position
+  // 用来平滑 Zoom 的中间变量
+  const smoothZoomRef = useRef(0);
+
   const findNearestRibbonT = (cameraPos: THREE.Vector3): number => {
     const height = 7;
     const maxRadius = 3.0;
     let nearestT = 0;
     let minDistance = Infinity;
     
-    // Sample points along the ribbon to find nearest
     for (let t = 0; t <= 1; t += 0.02) {
       const ribbonY = t * height - height / 2 + 0.3;
       const layerRadius = maxRadius * (1 - t * 0.88) + 0.15;
@@ -74,34 +79,37 @@ function CameraController({
   };
 
   useFrame((_, delta) => {
-    // Detect state change to tree (pinch gesture completed)
+    // 1. Zoom 平滑处理 (Lerp)
+    // 这里的 3 * delta 控制缩放的跟手速度
+    smoothZoomRef.current += (zoom - smoothZoomRef.current) * 5 * delta;
+
+    // Detect state change to tree
     if (state === 'tree' && prevStateRef.current !== 'tree') {
-      // Find nearest ribbon position based on current camera location
       const nearestT = findNearestRibbonT(camera.position);
       
-      // Wait for tree to assemble before starting ribbon follow
-      transitionDelayRef.current = 2.0; // 2 second delay for assembly
-      ribbonTimeRef.current = nearestT; // Start from nearest position
+      transitionDelayRef.current = 2.0; 
+      ribbonTimeRef.current = nearestT; 
       isAtStarRef.current = false;
-      velocityRef.current = 0.05; // Start with small velocity for smooth transition
+      velocityRef.current = 0.05; 
       hasInitializedRef.current = true;
       onStarFocused?.(false);
     }
     
-    // Reset when leaving tree state
     if (state !== 'tree' && prevStateRef.current === 'tree') {
       isAtStarRef.current = false;
       onStarFocused?.(false);
     }
     prevStateRef.current = state;
 
-    // Handle transition delay
     if (transitionDelayRef.current > 0) {
       transitionDelayRef.current -= delta;
     }
 
-    // Base camera distance
-    const baseDistance = state === 'tree' ? 12 : 18;
+    // ✨ 2. 计算基础距离 (把 zoom 加进去)
+    // 基础距离 12，加上 zoom 偏移量
+    // 限制范围：最近 4，最远 35
+    let baseDistance = state === 'tree' ? 12 : 18;
+    baseDistance = Math.max(4, Math.min(35, baseDistance + smoothZoomRef.current));
     
     let targetX = 0;
     let targetY = 2;
@@ -110,23 +118,18 @@ function CameraController({
     
     if (state === 'tree' && transitionDelayRef.current <= 0) {
       if (!isAtStarRef.current) {
-        // Physics-based smooth rotation with easing
         const t = ribbonTimeRef.current;
         
-        // Dynamic target velocity: fast in middle, slow at start and end
-        const easeFactor = Math.sin(t * Math.PI); // 0 at start/end, 1 in middle
-        const baseVelocity = 0.12;
-        const maxVelocity = 0.22;
+        const easeFactor = Math.sin(t * Math.PI); 
+        const baseVelocity = 0.05;
+        const maxVelocity = 0.12;
         targetVelocityRef.current = baseVelocity + easeFactor * (maxVelocity - baseVelocity);
         
-        // Smooth acceleration/deceleration (spring-like physics)
-        const acceleration = 2.5; // How fast velocity changes
+        const acceleration = 2.5; 
         velocityRef.current += (targetVelocityRef.current - velocityRef.current) * acceleration * delta;
         
-        // Apply velocity with smooth damping
         ribbonTimeRef.current += velocityRef.current * delta;
         
-        // Check if reached the top (t >= 1)
         if (ribbonTimeRef.current >= 1) {
           isAtStarRef.current = true;
           onStarFocused?.(true);
@@ -134,27 +137,27 @@ function CameraController({
         }
         const tClamped = Math.min(ribbonTimeRef.current, 1);
         
-        // Match ribbon spiral parameters from TetrahedronSpiral
         const height = 7;
         const maxRadius = 3.0;
         const ribbonY = tClamped * height - height / 2 + 0.3;
         const layerRadius = maxRadius * (1 - tClamped * 0.88) + 0.15;
-        const angle = tClamped * Math.PI * 6; // 3 full spirals
+        const angle = tClamped * Math.PI * 6; 
         
-        // Position camera outside the ribbon, looking at the ribbon point
-        const cameraDistance = 5 + layerRadius * 1.5;
-        const cameraAngle = angle + Math.PI * 0.3; // Slightly ahead of ribbon
+        // 当自动攀爬时，我们稍微减弱 zoom 的影响，但也允许轻微推拉
+        const cameraDistance = (5 + layerRadius * 1.5) + (smoothZoomRef.current * 0.5);
+        const cameraAngle = angle + Math.PI * 0.3; 
         
         targetX = Math.cos(cameraAngle) * cameraDistance;
-        targetY = ribbonY + 1.5; // Slightly above the ribbon point
+        targetY = ribbonY + 1.5; 
         targetZ = Math.sin(cameraAngle) * cameraDistance;
         lookAtY = ribbonY;
       } else {
-        // Focused on star - stay looking at the tree top
+        // 到达顶部 Star
         const starY = 4.4;
         targetX = 0;
         targetY = starY + 1;
-        targetZ = 6;
+        // 允许在看星星的时候缩放
+        targetZ = 6 + smoothZoomRef.current;
         lookAtY = starY;
       }
     } else if (handPosition && state === 'galaxy') {
@@ -162,19 +165,21 @@ function CameraController({
       targetY = (0.5 - handPosition.y) * 10 + 2;
       targetZ = Math.cos(orbitRotation.y) * baseDistance;
     } else {
+      // 自由旋转模式 (Galaxy Mode)
+      // 使用球坐标系，把 zoom 应用到半径上
       targetX = Math.sin(orbitRotation.y) * baseDistance;
       targetY = Math.sin(orbitRotation.x) * 5 + 2;
       targetZ = Math.cos(orbitRotation.y) * baseDistance;
     }
     
     // Frame-rate independent smooth camera movement
-    const smoothFactor = 1 - Math.exp(-3 * delta);
+    // 增加一点阻尼感，让镜头更有分量
+    const smoothFactor = 1 - Math.exp(-2.5 * delta);
     
     positionRef.current.x += (targetX - positionRef.current.x) * smoothFactor;
     positionRef.current.y += (targetY - positionRef.current.y) * smoothFactor;
     positionRef.current.z += (targetZ - positionRef.current.z) * smoothFactor;
     
-    // Smooth look-at target
     targetRef.current.y += (lookAtY - targetRef.current.y) * smoothFactor;
     
     camera.position.copy(positionRef.current);
@@ -190,6 +195,7 @@ function SceneContent({
   focusedPhotoIndex,
   orbitRotation,
   handPosition,
+  zoom, // <--- 接收 props
   onStarFocusChange,
 }: SceneContentProps) {
   const [isStarFocused, setIsStarFocused] = useState(false);
@@ -205,18 +211,12 @@ function SceneContent({
         state={state} 
         orbitRotation={orbitRotation}
         handPosition={handPosition}
+        zoom={zoom} // <--- 传递给 Controller
         onStarFocused={handleStarFocused}
       />
       
-      {/* 
-        Remove Environment component entirely - it loads HDR from raw.githack.com which is blocked in China.
-        Use enhanced lighting instead for reflections.
-      */}
-      
-      {/* Simplified lighting - fewer point lights for better performance */}
       <ambientLight intensity={0.2} />
       
-      {/* Single main spotlight */}
       <spotLight 
         position={[0, 12, 5]} 
         angle={0.6}
@@ -225,10 +225,8 @@ function SceneContent({
         color="#fff8e8"
       />
       
-      {/* Single colored accent light */}
       <pointLight position={[0, -2, 0]} intensity={1.2} color="#ff6633" distance={12} />
       
-      {/* Background stars - reduced count for performance */}
       <Stars 
         radius={100} 
         depth={50} 
@@ -238,33 +236,35 @@ function SceneContent({
         fade 
         speed={0.3}
       />
+
+      {/* ✨ 新增：魔法闪烁粒子 (增加氛围感) */}
+      <Sparkles 
+        count={100} 
+        scale={12} 
+        size={4} 
+        speed={0.4} 
+        opacity={0.5} 
+        color="#fffeb8"
+      />
       
-      {/* Main particle system */}
       <ParticleSystem state={state} particleCount={4000} />
       
-      {/* Christmas gift boxes */}
       <GiftBoxes state={state} />
       
-      {/* Gem ornaments (cubes & icosahedrons) */}
       <GemOrnaments state={state} />
       
-      {/* Tetrahedron spiral ribbon */}
       <TetrahedronSpiral state={state} />
       
-      {/* Photo cards */}
       <PhotoCards 
         state={state} 
         photos={photos}
         focusedIndex={focusedPhotoIndex}
       />
       
-      {/* Tree star topper */}
       <TreeStar state={state} isFocused={isStarFocused} />
       
-      {/* Snow effect - activates when star is focused */}
       <SnowEffect active={isStarFocused} />
       
-      {/* Post-processing effects - enhanced glow */}
       <EffectComposer>
         <Bloom 
           luminanceThreshold={0.85}
@@ -281,12 +281,14 @@ function SceneContent({
   );
 }
 
+// ✨ 更新接口
 interface ChristmasSceneProps {
   state: TreeState;
   photos: string[];
   focusedPhotoIndex: number | null;
   orbitRotation: { x: number; y: number };
   handPosition: { x: number; y: number } | null;
+  zoom: number; // <--- 新增
   onReady?: () => void;
   onStarFocusChange?: (focused: boolean) => void;
 }
@@ -297,16 +299,18 @@ export function ChristmasScene({
   focusedPhotoIndex,
   orbitRotation,
   handPosition,
+  zoom, // <--- 接收
   onReady,
   onStarFocusChange,
 }: ChristmasSceneProps) {
-  // Call onReady after mount
+  
   useEffect(() => {
     const timer = setTimeout(() => {
       onReady?.();
     }, 500);
     return () => clearTimeout(timer);
   }, [onReady]);
+
   return (
     <Canvas
       camera={{ position: [0, 2, 12], fov: 60 }}
@@ -329,6 +333,7 @@ export function ChristmasScene({
         focusedPhotoIndex={focusedPhotoIndex}
         orbitRotation={orbitRotation}
         handPosition={handPosition}
+        zoom={zoom} // <--- 传递
         onStarFocusChange={onStarFocusChange}
       />
     </Canvas>
